@@ -1,0 +1,28 @@
+== write_param + commit_params ==
+
+CAUTION: writes modify persistent controller state. Verify on a non-critical
+key with a known-recoverable value before automating writes.
+
+host → ctrl  (12 bytes)  write
+02 00 00 00  22 00 00 00  0C 01 00 00
+^^                                       opcode = 0x02 write_param
+   ^^                                    sequence
+      ^^                                 aux
+         ^^                              pad
+            ^^^^^^^^^^^                  key   = 34   (downcam_scale_x)
+                         ^^^^^^^^^^^     value = 0x0000010C = 268     (write the same value back to test round-trip)
+
+ctrl → host  (12 bytes)
+02 00 00 00  00 00 00 00  00 00 00 00
+^^                                       opcode_echo = 0x02
+
+host → ctrl  (4 bytes)  commit
+03 00 00 00
+^^                                       opcode = 0x03 commit_params
+
+ctrl → host  (4 bytes)
+03 00 00 00
+^^                                       opcode_echo = 0x03
+
+A write WITHOUT a following commit is silently discarded by the controller
+on reset; it is NOT applied. Always commit at the end of a write burst.

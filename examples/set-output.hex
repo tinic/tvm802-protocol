@@ -1,0 +1,30 @@
+== output_bit_on_immediate (light ring ON) ==
+
+Target: turn on the light ring.
+Word to set: 0x0201 = lamp_enable (0x0200) | cam_light_pair (0x0001).
+
+host → ctrl  (8 bytes)
+14 00 00 00  01 02 00 00
+^^                                       opcode = 0x14 output_bit_on_immediate
+   ^^                                    sequence
+      ^^                                 aux
+         ^^                              pad
+            ^^^^^^^^^^^                  bit_mask = 0x00000201
+
+ctrl → host  (echo)
+14 00 ...
+
+To turn it back off:
+
+host → ctrl  (8 bytes)
+15 00 00 00  01 02 00 00
+^^                                       opcode = 0x15 output_bit_off_immediate
+            ^^^^^^^^^^^                  bit_mask = 0x00000201
+
+CAMERA SWITCH (single atomic write):
+
+host → ctrl  (8 bytes)  switch to UP camera with light
+04 00 00 00  00 82 00 00
+^^                                       opcode = 0x04 set_outputs_immediate
+            ^^^^^^^^^^^                  full output word = 0x00008200
+                                         = cam_mux | lamp_enable

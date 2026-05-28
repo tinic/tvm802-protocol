@@ -1,0 +1,22 @@
+== read_param  (key 34, down-camera X scale) ==
+
+host → ctrl  (12 bytes)
+01 00 00 00  22 00 00 00  00 00 00 00
+^^                                       opcode = 0x01 read_param
+   ^^                                    sequence = 0
+      ^^                                 aux = 0
+         ^^                              pad = 0
+            ^^^^^^^^^^^                  key = 0x00000022 = 34   (downcam_scale_x)
+                         ^^^^^^^^^^^     pad
+
+ctrl → host  (12 bytes)
+01 00 00 00  00 00 00 00  0C 01 00 00
+^^                                       opcode_echo = 0x01
+   ^^                                    sequence
+      ^^                                 aux
+         ^^                              pad
+            ^^^^^^^^^^^                  reserved / echoed key area
+                         ^^^^^^^^^^^     value = 0x0000010C = 268
+
+DECODED:
+    downcam_scale_x = 268 / 10000 = 0.0268 mm/pixel

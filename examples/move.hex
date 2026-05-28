@@ -1,0 +1,29 @@
+== move_immediate (X + Y to a stage point) ==
+
+Target: X = 100.000 mm, Y = 200.000 mm.
+Encode:  raw = round(mm * scale) * 1000
+  X:  round(100.000 * 32.8084) * 1000 = round(3280.84) * 1000 = 3281000 = 0x00320B68
+  Y:  round(200.000 * 32.8084) * 1000 = round(6561.68) * 1000 = 6562000 = 0x006419D0
+
+host → ctrl  (28 bytes)
+08 00 14 00  00 00 00 00  00 00 00 00  68 0B 32 00  00 00 00 00  D0 19 64 00  00 00 00 00
+^^                                                                                              opcode    = 0x08 move_immediate
+   ^^                                                                                           sequence  = 0
+      ^^                                                                                        axis_mask = 0x14   (bits 2 and 4 set → X and Y)
+         ^^                                                                                     pad       = 0
+            ^^^^^^^^^^^                                                                          target[0] = 0   (axis 0 not in mask; ignored)
+                         ^^^^^^^^^^^                                                             target[1] = 0   (axis 1 not in mask; ignored)
+                                      ^^^^^^^^^^^                                                target[2] = 0x00320B68 = 3281000   → 100 mm X
+                                                   ^^^^^^^^^^^                                   target[3] = 0   (axis 3 not in mask)
+                                                                ^^^^^^^^^^^                      target[4] = 0x006419D0 = 6562000   → 200 mm Y
+                                                                             ^^^^^^^^^^^         target[5] = 0   (axis 5 not in mask)
+
+ctrl → host  (echo only; no payload)
+08 00 ...
+
+DETECTION OF COMPLETION:
+    Loop:
+        poll = status_poll()
+        if poll.axis_state[2] == 0 and abs(poll.axis_position[2] - 0x00320B68) <= 1 and
+           poll.axis_state[4] == 0 and abs(poll.axis_position[4] - 0x006419D0) <= 1:
+            done

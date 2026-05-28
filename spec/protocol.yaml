@@ -1,0 +1,580 @@
+# =============================================================================
+#  TVM802 Protocol — machine-readable specification
+#
+#  Single source of truth. The Markdown docs explain "why"; this file is the
+#  authoritative byte layout. All offsets, sizes, and constants here are
+#  verified against live wire traffic unless a `confidence:` field says
+#  otherwise.
+#
+#  Conventions:
+#    - All multi-byte integers are little-endian unless stated.
+#    - `offset` is from the start of the frame (request OR response).
+#    - `type: u8 | u16le | u16be | s32le | u32le | ...`
+#    - `confidence: verified | high | medium | low`
+#    - `delivery: immediate | queued | both` — many commands have twin opcodes
+#      (one immediate, one appended to the controller's FIFO).
+# =============================================================================
+
+meta:
+  spec_version: "0.1.0"
+  spec_date: "2026-05-28"
+  device_family: "Qihe TVM802 (A / B / B+)"
+  byte_order: little_endian
+  alignment: 1
+
+# -----------------------------------------------------------------------------
+#  Transport layer
+# -----------------------------------------------------------------------------
+transport:
+  protocol: tcp
+  controller_role: server
+  host_role: client
+  default_endpoint:
+    ip: 192.168.0.8
+    port: 701
+  multi_client_supported: true   # Second client can read params concurrently.
+  socket_options:
+    tcp_nodelay: true
+    send_timeout_ms: 100
+    recv_timeout_ms: 100
+  framing:
+    type: fixed_per_opcode       # Frame size determined entirely by byte[0].
+    checksum: none
+    length_prefix: none
+  drain_before_write: true       # MUST discard any pending bytes before each
+                                 # request, or the first response on a fresh
+                                 # connection will misalign.
+
+# -----------------------------------------------------------------------------
+#  Common request header (first 4 bytes of every request)
+# -----------------------------------------------------------------------------
+request_header:
+  - { name: opcode,   offset: 0, type: u8, doc: "Selects command. Determines total frame size." }
+  - { name: sequence, offset: 1, type: u8, doc: "Sequence counter. Set by host on queued-command flush; 0 for immediate commands." }
+  - { name: aux,      offset: 2, type: u8, doc: "Axis-mask or sub-argument; meaning is opcode-specific." }
+  - { name: pad,      offset: 3, type: u8, doc: "Padding; observed as 0." }
+
+ack_rule: |
+  A response whose byte[0] equals the request's byte[0] is the ACK for that
+  request. The host's transport layer drains stale bytes, sends the request,
+  then reads frames until byte[0] matches; mismatches are discarded. There is
+  no per-command status byte — motion completion is inferred from the status
+  poll (opcode 0x00), not from response bytes.
+
+# -----------------------------------------------------------------------------
+#  Axis model
+# -----------------------------------------------------------------------------
+axes:
+  count: 6
+  position_encoding: |
+    Each axis position on the wire is a signed int32 (LE) with the value:
+        wire = round(mm * scale[i]) * 1000
+    so the inverse for a reader is:
+        mm = (wire / 1000) / scale[i]
+    Note the int-truncated mm*scale step means positions are quantised to
+    1/scale[i] mm, which matters for the rotary axes (scale 4.4444 → ~0.225°).
+  scales: [1.0, 1.0, 32.8084, 4.4444, 32.8084, 4.4444]
+  map:
+    0:
+      id: peel
+      kind: linear
+      description: |
+        Shared peel-tape take-up motor. One motor pulls the cover tape off all
+        active feeders simultaneously through a friction shaft. NOT the
+        carrier-tape advance — see feeders model.
+    1:
+      id: z
+      kind: rocker
+      description: |
+        Z plunge, SHARED between both nozzles via a mechanical rocker
+        (seesaw, ~17 mm crank arm, 1600 step/rev). Only one nozzle is down
+        at a time; lowering nozzle 2 raises nozzle 1. The protocol exposes
+        ONE Z axis; the rocker geometry is in the mechanism, not the wire.
+    2:
+      id: x
+      kind: linear
+      description: "Gantry X."
+    3:
+      id: a1
+      kind: rotary
+      description: "Head-1 rotation (theta)."
+    4:
+      id: y
+      kind: linear
+      description: "Gantry Y."
+    5:
+      id: a2
+      kind: rotary
+      description: "Head-2 rotation (theta)."
+
+axis_state_enum:
+  type: u8
+  values:
+    0: idle
+    1: moving      # confidence: high (any nonzero = busy is the safe rule)
+    2: homing      # confidence: medium
+    3: error       # confidence: medium
+    4: limit_hit   # confidence: medium
+  notes: |
+    The safe reimplementation rule is: 0 == idle, anything nonzero == busy.
+    The four nonzero codes are observed in the wild but their exact meaning
+    is best treated as opaque for completion detection.
+
+# -----------------------------------------------------------------------------
+#  Digital output bit map (set with opcodes 0x04 / 0x14 / 0x20-0x23)
+# -----------------------------------------------------------------------------
+digital_outputs:
+  width_bits: 32
+  bits:
+    0x0001: { id: cam_light_pair, doc: "Camera-light pairing enable. Required alongside lamp_enable for the LED ring to light." }
+    0x0002: { id: head1_blow,     doc: "Head 1 blow-off / release." }
+    0x0004: { id: head1_vacuum,   doc: "Head 1 vacuum solenoid." }
+    0x0008: { id: vacuum_pump_a,  doc: "Vacuum pump enable (paired with bit 0x400)." }
+    0x0020: { id: run,            doc: "Run / start-cycle indicator." }
+    0x0040: { id: suspend,        doc: "Suspend / pause indicator." }
+    0x0080: { id: jog_mode_a,     doc: "Jog-speed selector (paired with 0x100)." }
+    0x0100: { id: jog_mode_b,     doc: "Jog-speed selector (paired with 0x80). Together 0x180 = high-speed jog." }
+    0x0200: { id: lamp_enable,    doc: "Light-ring power enable. The host writes 0x201 (this | cam_light_pair) to light the ring." }
+    0x0400: { id: vacuum_pump_b,  doc: "Vacuum pump enable (paired with 0x8). 0x408 is the pump-on word." }
+    0x0800: { id: buzzer,         doc: "Audible alarm." }
+    0x1000: { id: head2_blow,     doc: "Head 2 blow-off / release." }
+    0x2000: { id: head2_vacuum,   doc: "Head 2 vacuum solenoid." }
+    0x4000: { id: prick_pin,      doc: "Pull-down pin actuator on the moving head. Drags carrier tape during feed." }
+    0x8000: { id: cam_mux,        doc: "Camera up/down mux relay (CD4052). 0x8200 is the up-camera select word." }
+  composite_values:
+    light_ring_on:   0x0201   # lamp_enable | cam_light_pair
+    pump_on:         0x0408   # vacuum_pump_a | vacuum_pump_b
+    cam_mux_up:      0x8200   # cam_mux | lamp_enable (host writes both)
+    jog_fast:        0x0180   # jog_mode_a | jog_mode_b
+
+# -----------------------------------------------------------------------------
+#  Digital input bit map (read from status poll, bytes 8..10)
+# -----------------------------------------------------------------------------
+digital_inputs:
+  polarity: active_low_unless_noted
+  bits:
+    # byte[8]
+    b2:  { id: x_limit_pos,   byte: 8, bit: 2, doc: "X positive limit." }
+    b3:  { id: x_limit_neg,   byte: 8, bit: 3 }
+    b4:  { id: y_limit_pos,   byte: 8, bit: 4 }
+    b5:  { id: y_limit_neg,   byte: 8, bit: 5 }
+    # byte[9]
+    b9:  { id: z_home_limit,  byte: 9, bit: 1, doc: "Z home / limit switch." }
+    # byte[10]
+    b14: { id: btn_y_minus,   byte: 10, bit: 6, doc: "Operator panel: Y-." }
+    b15: { id: btn_x_plus,    byte: 10, bit: 7, doc: "Operator panel: X+." }
+    b16: { id: btn_step,      byte: 11, bit: 0, doc: "Operator panel: Step." }
+    b17: { id: btn_stop,      byte: 11, bit: 1, doc: "Operator panel: Stop / Suspend." }
+    b18: { id: btn_start,     byte: 11, bit: 2, doc: "Operator panel: Run / Start." }
+    b19: { id: btn_x_minus,   byte: 11, bit: 3, doc: "Operator panel: X-." }
+    b20: { id: btn_jog_speed, byte: 11, bit: 4, doc: "Operator panel: jog-speed select." }
+    b21: { id: btn_y_plus,    byte: 11, bit: 5, doc: "Operator panel: Y+." }
+    b22: { id: prick_home,    byte: 11, bit: 6, doc: "Prick-pin / piercer home position." }
+  pickup_confirmation:
+    type: analog_not_bit
+    doc: |
+      Per-head pickup confirmation is ANALOG, not a digital input.
+      Read the two analog channels (status response bytes 42..45). The host
+      compares (threshold - pressure); repeated fail raises pressureSensingError.
+  e_stop:
+    present: false
+    doc: |
+      There is NO emergency-stop bit in the protocol. E-stop is hardwired
+      on the controller side and not visible to the network layer.
+
+# -----------------------------------------------------------------------------
+#  Parameter store (read via opcode 0x01, write via 0x02, commit via 0x03)
+# -----------------------------------------------------------------------------
+parameters:
+  width_bits: 32
+  signed: true
+  key_count_observed: 601
+  units:
+    position_keys_x1000: "wire / 1000 = mm"
+    scale_keys_x10000:   "wire / 10000 = mm/pixel"
+  known_keys:
+    2:  { id: controller_ip,        unit: packed_ipv4_le, doc: "0x0800A8C0 = 192.168.0.8." }
+    3:  { id: controller_port,      unit: u16,            doc: "Default 701." }
+    4:  { id: home_x,               unit: micron }
+    5:  { id: home_y,               unit: micron }
+    6:  { id: n1_upcam_pos_x,       unit: micron, doc: "Head-1 position over up-vision camera, X." }
+    7:  { id: n1_upcam_pos_y,       unit: micron }
+    12: { id: discard_x,            unit: micron, doc: "Reject / discard bin position." }
+    13: { id: discard_y,            unit: micron }
+    20: { id: upcam_scale_x,        unit: micropx_per_mm,  doc: "Up-vision camera, X scale, * 10000." }
+    21: { id: upcam_scale_y,        unit: micropx_per_mm }
+    22: { id: vision_z,             unit: micron,          doc: "Focal Z for up-vision; often 0." }
+    26: { id: nozzle_vision_z,      unit: micron,          doc: "Nozzle Z at vision; often 0." }
+    34: { id: downcam_scale_x,      unit: micropx_per_mm,  doc: "Down-vision camera, X scale, * 10000." }
+    35: { id: downcam_scale_y,      unit: micropx_per_mm }
+    45: { id: feature_flag_v3_09,   unit: bool,            doc: "Z-homing enable; firmware > 3.09." }
+    56: { id: z_home_offset,        unit: micron,          doc: "Z home offset; written during homing." }
+    58: { id: camera_mirror_pack,   unit: packed_i16x2,    doc: "(up_mirror << 16) | (down_mirror & 0xFFFF). MVision-DLL flip codes." }
+    60: { id: n2_upcam_pos_x,       unit: micron,          doc: "Head-2 position over up-vision camera, X." }
+    61: { id: n2_upcam_pos_y,       unit: micron }
+  notes: |
+    Keys 0..600 are scanned by the host on connect. The set above is the
+    documented subset; many others exist (feeder configs, vision Range,
+    mark sizes, thresholds) and live alongside ParamEdit's labelled UI.
+
+# -----------------------------------------------------------------------------
+#  Opcodes
+# -----------------------------------------------------------------------------
+opcodes:
+
+  - code: 0x00
+    name: status_poll
+    delivery: immediate
+    summary: "Read full machine state. The polling frame; called every UI tick (~50 ms)."
+    request:
+      size: 4
+      bytes: [0x00, 0x00, 0x00, 0x00]
+    response:
+      size: 47
+      fields:
+        - { name: opcode_echo,   offset: 0,  type: u8 }
+        - { name: sequence,      offset: 1,  type: u8 }
+        - { name: queue_free,    offset: 2,  type: u8,    doc: "Free slots in controller command FIFO (~7 max). Host gates queued writes on this > 0." }
+        - { name: reserved_3,    offset: 3,  type: u8 }
+        - { name: status_word,   offset: 4,  type: u16le, doc: "Bit-packed status. Bit 0 = system moving; bit 1 = job running; bit 2 = home active; bit 4 = limit hit; bits 5-15 vendor-specific." }
+        - { name: reserved_6,    offset: 6,  type: u16le }
+        - { name: input_byte_0,  offset: 8,  type: u8,    doc: "Digital input byte 0; see digital_inputs map." }
+        - { name: input_byte_1,  offset: 9,  type: u8 }
+        - { name: input_byte_2,  offset: 10, type: u8 }
+        - { name: input_byte_3,  offset: 11, type: u8 }
+        - name: axis_position
+          offset: 12
+          type: s32le_array
+          count: 6
+          stride: 4
+          doc: "Position per axis 0..5. Decode: mm = (raw / 1000) / scales[axis]."
+        - { name: axis_state_0,  offset: 36, type: u8, doc: "Axis 0 (peel) state; 0 = idle." }
+        - { name: axis_state_1,  offset: 37, type: u8, doc: "Axis 1 (z) state." }
+        - { name: axis_state_2,  offset: 38, type: u8, doc: "Axis 2 (x) state." }
+        - { name: axis_state_3,  offset: 39, type: u8, doc: "Axis 3 (a1) state." }
+        - { name: axis_state_4,  offset: 40, type: u8, doc: "Axis 4 (y) state." }
+        - { name: axis_state_5,  offset: 41, type: u8, doc: "Axis 5 (a2) state." }
+        - { name: vacuum_1_raw,  offset: 42, type: u16le, doc: "Head-1 vacuum analog. Real reading = raw * vacuum_scale_1 (per-machine calibration)." }
+        - { name: vacuum_2_raw,  offset: 44, type: u16le, doc: "Head-2 vacuum analog." }
+        - { name: event_code,    offset: 46, type: u8,    doc: "Controller event / error code; 0 = no event." }
+
+  - code: 0x01
+    name: read_param
+    delivery: immediate
+    summary: "Read one keyed configuration parameter."
+    request:
+      size: 12
+      template: [0x01, 0x00, 0x00, 0x00, "key.b0", "key.b1", "key.b2", "key.b3", 0x00, 0x00, 0x00, 0x00]
+      fields:
+        - { name: opcode,  offset: 0,  type: u8 }
+        - { name: key,     offset: 4,  type: u32le, doc: "Parameter key; see parameters.known_keys." }
+    response:
+      size: 12
+      fields:
+        - { name: opcode_echo, offset: 0,  type: u8 }
+        - { name: value,       offset: 8,  type: s32le, doc: "Raw parameter value. Apply the key's unit (position_keys_x1000 ⇒ /1000 mm; scale_keys_x10000 ⇒ /10000 mm/px)." }
+
+  - code: 0x02
+    name: write_param
+    delivery: immediate
+    summary: "Write one keyed configuration parameter. Must be followed by opcode 0x03 to commit."
+    request:
+      size: 12
+      fields:
+        - { name: opcode, offset: 0,  type: u8 }
+        - { name: key,    offset: 4,  type: u32le }
+        - { name: value,  offset: 8,  type: s32le, doc: "Raw value, same unit convention as read_param." }
+    response:
+      size: 12
+      fields:
+        - { name: opcode_echo, offset: 0, type: u8 }
+    caution: "Writes are non-destructive only after the commit (0x03). Bursts of writes for one logical change always end with one 0x03."
+
+  - code: 0x03
+    name: commit_params
+    delivery: immediate
+    summary: "Commit / apply the most recent write_param burst. Terminates a parameter-edit sequence."
+    request:
+      size: 4
+      bytes: [0x03, 0x00, 0x00, 0x00]
+    response:
+      size: 4
+    notes: "NOT a job-start, NOT a reset; only latches pending param writes."
+
+  - code: 0x04
+    name: set_outputs_immediate
+    delivery: immediate
+    summary: "Replace the digital-output word, immediate."
+    request:
+      size: 8
+      fields:
+        - { name: opcode,  offset: 0, type: u8 }
+        - { name: outputs, offset: 4, type: u32le, doc: "Full 32-bit output bitmap; see digital_outputs." }
+
+  - code: 0x05
+    name: controller_init
+    delivery: immediate
+    summary: "Servo / controller init after TCP connect. Host issues once on (re)connect."
+    request:
+      size: 8
+      bytes: [0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
+
+  - code: 0x06
+    name: set_motion_profile_immediate
+    delivery: immediate
+    summary: "Set per-axis acceleration / deceleration / velocity tables, immediate."
+    request:
+      size: 76
+      fields:
+        - { name: opcode,   offset: 0,  type: u8 }
+        - { name: axis,     offset: 2,  type: u8, doc: "Target axis index 0..5." }
+        - name: accel
+          offset: 4
+          type: u32le_array
+          count: 6
+          doc: "Per-axis acceleration steps."
+        - name: decel
+          offset: 28
+          type: u32le_array
+          count: 6
+        - name: velocity
+          offset: 52
+          type: u32le_array
+          count: 6
+          doc: "Per-axis velocity; multiplied by the active speed-percent (0..100)."
+    notes: "Issued before every job move; cheap to re-send."
+
+  - code: 0x07
+    name: teach_position_immediate
+    delivery: immediate
+    summary: "TEACH: set the controller's idea of current position for one axis. NOT a move."
+    request:
+      size: 28
+      fields:
+        - { name: opcode,    offset: 0, type: u8 }
+        - { name: axis_mask, offset: 2, type: u8 }
+        - name: positions
+          offset: 4
+          type: s32le_array
+          count: 6
+          doc: "Per-axis target position (raw, same encoding as status_poll axis_position)."
+    use_cases:
+      - "Zero homing after limit-stop sequence."
+      - "Apply a fiducial offset correction without commanding motion."
+
+  - code: 0x08
+    name: move_immediate
+    delivery: immediate
+    summary: "Coordinated move on one or more axes, immediate. Skips axes already at target."
+    request:
+      size: 28
+      fields:
+        - { name: opcode,    offset: 0, type: u8 }
+        - { name: axis_mask, offset: 2, type: u8, doc: "Bit i set = include axis i in this move. 0x3F = all 6." }
+        - name: targets
+          offset: 4
+          type: s32le_array
+          count: 6
+          doc: "Per-axis target position; ignored for axes not in mask."
+    completion: "Polled via status_poll: axis_state[i]==0 AND axis_position[i]==target."
+
+  - code: 0x09
+    name: stop
+    delivery: immediate
+    summary: "Stop one or more axes."
+    request:
+      size: 8
+      fields:
+        - { name: opcode,    offset: 0, type: u8 }
+        - { name: axis_mask, offset: 2, type: u8, doc: "0x3F = stop all." }
+    use_cases: "Jog button-release, Stop button, error abort."
+
+  - code: 0x0B
+    name: program_control
+    delivery: immediate
+    summary: "Program / queue control."
+    request:
+      size: 4
+      fields:
+        - { name: opcode,  offset: 0, type: u8 }
+        - { name: command, offset: 2, type: u8, doc: "0 = clear/reset program (also clears queued list; used as queue-ready gate), 1 = run/resume, 2 = pause/suspend." }
+
+  - code: 0x0C
+    name: move_buffered
+    delivery: queued
+    summary: "Buffered (queued) move on the main motion axes. The standard job move."
+    request:
+      size: 28
+      fields:
+        - { name: opcode,    offset: 0, type: u8 }
+        - { name: sequence,  offset: 1, type: u8 }
+        - { name: axis_mask, offset: 2, type: u8, doc: "In production: mask covers axes 1..5 (Z + X + Y + A1 + A2); axis 0 is the dedicated feed opcode." }
+        - name: targets
+          offset: 4
+          type: s32le_array
+          count: 6
+    notes: "Appended to the controller FIFO; flushed when status_poll.queue_free > 0."
+
+  - code: 0x0D
+    name: feed_axis0
+    delivery: queued
+    summary: "Feeder advance: relative step on axis 0 (peel). Always negative direction."
+    request:
+      size: 28
+      fields:
+        - { name: opcode,    offset: 0, type: u8 }
+        - { name: sequence,  offset: 1, type: u8 }
+        - { name: axis_mask, offset: 2, type: u8, doc: "Always 0x01 (axis 0 only)." }
+        - name: targets
+          offset: 4
+          type: s32le_array
+          count: 6
+          doc: "targets[0] is the relative step count (negative)."
+
+  - code: 0x0E
+    name: set_outputs_queued
+    delivery: queued
+    summary: "Replace the digital-output word, appended to queue."
+    request:
+      size: 8
+      fields:
+        - { name: opcode,  offset: 0, type: u8 }
+        - { name: outputs, offset: 4, type: u32le }
+
+  - code: 0x0F
+    name: set_motion_profile_queued
+    delivery: queued
+    summary: "Queued form of set_motion_profile_immediate. Same payload."
+    request:
+      size: 76
+      same_as: 0x06
+
+  - code: 0x11
+    name: dwell
+    delivery: queued
+    summary: "Sleep / dwell for N milliseconds; appended to queue."
+    request:
+      size: 8
+      fields:
+        - { name: opcode, offset: 0, type: u8 }
+        - { name: ms,     offset: 2, type: u16le, doc: "Dwell duration in milliseconds." }
+
+  - code: 0x12
+    name: teach_position_queued
+    delivery: queued
+    summary: "Queued form of teach_position_immediate. Same payload as 0x07."
+    request:
+      size: 28
+      same_as: 0x07
+
+  - code: 0x13
+    name: pick_sync
+    delivery: queued
+    summary: "Pick-sequence sync / latch. Emitted between prick assertion and tape advance."
+    request:
+      size: 4
+      fields:
+        - { name: opcode, offset: 0, type: u8 }
+        - { name: latch,  offset: 2, type: u8, doc: "Always observed as 1 in production traffic." }
+    confidence: low
+    notes: |
+      Exact hardware semantic is opaque. Present in every pick FSM run between
+      output 0x4000 (prick) assertion and the opcode 0x0D feeder advance.
+
+  - code: 0x14
+    name: output_bit_on_immediate
+    delivery: immediate
+    summary: "Set ONE digital output bit ON, immediate. Does not affect other bits."
+    request:
+      size: 8
+      fields:
+        - { name: opcode, offset: 0, type: u8 }
+        - { name: bit,    offset: 4, type: u32le, doc: "Bitmask of output(s) to turn on (typically a single bit)." }
+
+  - code: 0x15
+    name: output_bit_off_immediate
+    delivery: immediate
+    summary: "Clear ONE digital output bit, immediate."
+    request:
+      size: 8
+      fields:
+        - { name: opcode, offset: 0, type: u8 }
+        - { name: bit,    offset: 4, type: u32le }
+
+  - code: 0x16
+    name: output_bit_on_queued
+    delivery: queued
+    summary: "Queued form of output_bit_on_immediate."
+    request:
+      size: 8
+      same_as: 0x14
+
+  - code: 0x17
+    name: output_bit_off_queued
+    delivery: queued
+    summary: "Queued form of output_bit_off_immediate."
+    request:
+      size: 8
+      same_as: 0x15
+
+# -----------------------------------------------------------------------------
+#  Completion / flow-control model
+# -----------------------------------------------------------------------------
+completion_model:
+  per_command_ack: false
+  motion_done_rule: |
+    For axis i, a move is considered done when BOTH:
+      (a) status_poll.axis_state[i] == 0
+      (b) status_poll.axis_position[i] == requested_target
+    Polling cadence on the stock host is ~50 ms (one UI timer tick).
+  queue_model: |
+    Queued commands (delivery: queued) are appended to a host-side list and
+    flushed to the controller while status_poll.queue_free > 0. The controller's
+    FIFO depth is ~7. This queue + the status poll IS the motion-completion
+    contract; there is no per-move ACK from the controller.
+  drain_recovery: |
+    If frames misalign (wrong opcode echoed), the host drains the socket
+    receive buffer and re-issues the request. A reimplementation should do
+    the same; do not try to checksum or re-frame from the middle.
+
+# -----------------------------------------------------------------------------
+#  Composite operations — non-opcode procedures the host uses
+# -----------------------------------------------------------------------------
+procedures:
+
+  homing:
+    summary: "Per-axis home sequence."
+    steps:
+      - "0x06 set_motion_profile — fast approach profile."
+      - "0x08 move_immediate toward the home limit switch."
+      - "Poll status_poll; watch the appropriate limit bit in input bytes."
+      - "0x09 stop on limit assertion."
+      - "0x06 set_motion_profile — slow profile."
+      - "0x08 move_immediate back off + re-approach slowly."
+      - "0x07 teach_position — zero the axis."
+    axis_order: "X then Y. Z first if Z-equipped (param 45 enables)."
+
+  feed_one_part:
+    summary: "Advance one carrier-tape pitch on a feeder."
+    notes: |
+      Feeders are NOT per-slot motors. The prick-pin lives on the moving head
+      (output 0x4000); the head physically drags the carrier tape one pitch
+      while axis 0 takes up the peel tape.
+    steps:
+      - "0x12 teach_position_queued — zero axis 0 (peel)."
+      - "0x16 output_bit_on_queued bit=0x4000 — extend prick pin."
+      - "0x13 pick_sync."
+      - "0x11 dwell — settle."
+      - "0x0C move_buffered — head X or Y move by one tape pitch (negative steps; 1500 or 3000 by part size)."
+      - "0x0D feed_axis0 — peel-tape take-up."
+      - "0x17 output_bit_off_queued bit=0x4000 — retract prick pin."
+
+  camera_switch:
+    summary: "Toggle camera mux between up and down."
+    notes: |
+      Up and down cameras share one DirectShow capture device (a USB grabber).
+      The selection is a CD4052 analog mux driven by output bits.
+    select_down:
+      - "0x15 output_bit_off_immediate bit=0x8000 — drop cam_mux."
+    select_up:
+      - "0x14 output_bit_on_immediate  bit=0x8200 — assert cam_mux | lamp_enable."

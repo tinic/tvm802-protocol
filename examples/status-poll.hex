@@ -1,0 +1,44 @@
+== status_poll ==
+
+host → ctrl  (4 bytes)
+00 00 00 00
+^^                     opcode      = 0x00 status_poll
+   ^^                  sequence    = 0
+      ^^               aux         = 0
+         ^^            pad         = 0
+
+ctrl → host  (47 bytes)
+00 00 07 00  03 00 00 00  00 00 00 00
+^^                                       opcode_echo = 0x00
+   ^^                                    sequence    = 0
+      ^^                                 queue_free  = 7   (all FIFO slots free; idle)
+         ^^                              reserved
+            ^^ ^^                        status_word = 0x0003  (bit 0 moving=clear, bit 1 job=clear; lo bits typical idle pattern)
+                  ^^ ^^                  reserved
+                        ^^ ^^ ^^ ^^      input_byte_0..3 = 0,0,0,0  (active-low; no limits asserted on this idle run)
+
+C0 09 00 00  00 00 00 00  E8 80 22 00  C0 12 00 00  F8 21 1A 00  00 00 00 00
+^^^^^^^^^^^                                                                    axis_position[0] = peel    = 0x000009C0  = 2496        → 2.496 mm
+              ^^^^^^^^^^^                                                       axis_position[1] = z       = 0          → 0 mm
+                           ^^^^^^^^^^^                                          axis_position[2] = x       = 0x002280E8 = 2_261_224   → 68.92 mm  (2_261_224 / 1000 / 32.8084)
+                                        ^^^^^^^^^^^                             axis_position[3] = a1      = 0x000012C0 = 4800        → 1.08°    (4800 / 1000 / 4.4444)
+                                                     ^^^^^^^^^^^                axis_position[4] = y       = 0x001A21F8 = 1_712_120   → 52.18 mm
+                                                                  ^^^^^^^^^^^   axis_position[5] = a2      = 0          → 0°
+
+00 00 00 00  00 00  10 00 23 00  00
+^^                                       axis_state[0] = 0  idle
+   ^^                                    axis_state[1] = 0  idle
+      ^^                                 axis_state[2] = 0  idle
+         ^^                              axis_state[3] = 0  idle
+            ^^                           axis_state[4] = 0  idle
+               ^^                        axis_state[5] = 0  idle
+                  ^^ ^^                  vacuum_1_raw  = 0x0010 = 16     (head 1 idle baseline)
+                        ^^ ^^            vacuum_2_raw  = 0x0023 = 35     (head 2 idle baseline)
+                              ^^         event_code    = 0     no event
+
+DECODED SUMMARY:
+    idle, no errors, all 6 axes idle
+    head pos:  X = 68.92 mm,  Y = 52.18 mm
+    nozzle 1 angle = 1.08°,   nozzle 2 angle = 0°
+    Z axis at rocker centre
+    queue empty (7/7 slots free)

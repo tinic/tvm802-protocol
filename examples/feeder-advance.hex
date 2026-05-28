@@ -1,0 +1,65 @@
+== feeder-advance (one pick from LEFT bank, X-drag) ==
+
+Scenario: pick one part from a tape feeder on the LEFT bank. Pitch = 1500 raw
+steps (negative direction on axis 2 / X). All commands shown are appended to
+the host's queued list and drained to the controller's FIFO as queue_free permits.
+
+Preconditions assumed already done:
+  - head positioned over the feeder slot
+  - nozzle armed (head_N_vacuum on if pre-vacuum requested)
+
+
+-- step 1: zero axis 0 so the upcoming peel advance is relative --
+12 SS 01 00  00 00 00 00  00 00 00 00  00 00 00 00  00 00 00 00  00 00 00 00  00 00 00 00
+^^                                                                                              opcode = 0x12 teach_position_queued
+   ^^                                                                                           sequence (host counter; shown as SS)
+      ^^                                                                                        axis_mask = 0x01  (axis 0 only)
+                                                                                                targets all zero (zero axis 0)
+
+
+-- step 2: extend the prick / pull-pin --
+16 SS 00 00  00 40 00 00
+^^                                       opcode = 0x16 output_bit_on_queued
+            ^^^^^^^^^^^                  bit = 0x00004000  (prick_pin)
+
+
+-- step 3: sync marker --
+13 SS 01 00
+^^                                       opcode = 0x13 pick_sync
+   ^^                                    sequence
+      ^^                                 latch = 1 (always 1 in production)
+
+
+-- step 4: small dwell to let the pin settle --
+11 SS 32 00  00 00 00 00
+^^                                       opcode = 0x11 dwell
+   ^^                                    sequence
+      ^^ ^^                              ms = 0x0032 = 50
+
+
+-- step 5: drag the carrier tape one pitch by moving the head on X --
+   Current X = 100000 (raw). Move to 100000 - 1500 = 98500 = 0x00018064.
+0C SS 04 00  00 00 00 00  00 00 00 00  64 80 01 00  00 00 00 00  00 00 00 00  00 00 00 00
+^^                                                                                              opcode = 0x0C move_buffered
+   ^^                                                                                           sequence
+      ^^                                                                                        axis_mask = 0x04  (axis 2 only — X)
+                                      ^^^^^^^^^^^                                                target[2] = 0x00018064 = 98500
+
+
+-- step 6: peel-tape take-up on axis 0 (relative since we just zeroed it) --
+0D SS 01 00  78 FC FF FF  00 00 00 00  00 00 00 00  00 00 00 00  00 00 00 00  00 00 00 00
+^^                                                                                              opcode = 0x0D feed_axis0
+   ^^                                                                                           sequence
+      ^^                                                                                        axis_mask = 0x01  (axis 0)
+            ^^^^^^^^^^^                                                                          target[0] = 0xFFFFFC78 = -904   (negative; ~0.9 mm peel take-up)
+
+
+-- step 7: retract the prick pin --
+17 SS 00 00  00 40 00 00
+^^                                       opcode = 0x17 output_bit_off_queued
+            ^^^^^^^^^^^                  bit = 0x00004000  (prick_pin)
+
+
+All 7 commands together form one feed cycle. They drain through the FIFO at
+the controller's pace; the host learns the cycle is complete when:
+  status_poll.axis_state[0] == 0 AND axis_state[2] == 0 AND queue_free == 7
