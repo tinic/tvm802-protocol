@@ -761,6 +761,99 @@ opcodes:
       same_as: 0x15
 
 # -----------------------------------------------------------------------------
+#  Camera subsystem (USB grabber + analog decoder)
+#
+#  Two cameras share one USB capture device through a CD4052 analog mux.
+#  The mux is driven by the controller (TCP protocol, output bits — see
+#  digital_outputs.cam_mux / lamp_enable above). The USB grabber and the
+#  SAA7113 video decoder behind it have their own protocols (USB control
+#  transfers, I²C on the SAA7113). This section documents the camera
+#  subsystem identifiers and the SAA7113 register subset; full chain walk
+#  and code examples are in docs/12-camera-system.md.
+# -----------------------------------------------------------------------------
+camera_system:
+  signal_chain: "cameras → CD4052 mux → SAA7113 decoder → STK1160/STK1150 USB bridge → host"
+  grabber:
+    chip: "Syntek STK1150 (or STK1160; identical USB interface)"
+    usb_vid: 0x05E1
+    usb_pid: 0x0408
+    product_name: "USB2.0 Grabber"
+    pixel_formats: ["UYVY 640x480", "YUY2 640x480"]
+    rgb_supported: false
+    output_depth_bits: 8
+    internal_adc_bits: 10
+    note: |
+      Although the chip's ADC is 10-bit, only 8-bit UYVY is exposed over USB.
+      Raw 10-bit access is not available without firmware modification.
+  video_decoder:
+    chip: "Philips/NXP SAA7113H"
+    i2c_address_7bit_default: 0x25     # RTS0 strapped HIGH
+    i2c_address_7bit_alt:     0x24     # RTS0 strapped LOW
+    interlace: "field-by-field, deinterlaced in-chip; output is a single field per USB frame"
+    standard: "auto-detect NTSC / PAL / SECAM (configurable via reg 0x0E)"
+  stk1160_vendor_requests:
+    register_read:
+      bmRequestType: 0xC0
+      bRequest:      0x00
+      wValue:        0x0000
+      wIndex:        "register address (u16)"
+      wLength:       1
+    register_write:
+      bmRequestType: 0x40
+      bRequest:      0x01
+      wValue:        "value (low byte)"
+      wIndex:        "register address (u16)"
+      wLength:       0
+  stk1160_register_blocks:
+    0x0nn: gpio
+    0x1nn: video_decoder_config
+    0x2nn: i2c_master_to_saa7113
+    0x3nn: timing_generator
+    0x5nn: audio
+  stk1160_i2c_master:
+    sictl_base: 0x200
+    sictl_status: 0x201
+    sictl_slave_addr_byte: 0x203
+    sbusw_subaddr: 0x204
+    sbusw_data:    0x205
+    sbusr_subaddr: 0x208
+    sbusr_data:    0x209
+    write_kick_bit: 0x01    # write 0x01 to 0x200 to begin a write
+    read_kick_bit:  0x20    # write 0x20 to 0x200 to begin a read
+    write_finished_bit: 0x04  # status byte 0x201 bit 2
+    read_finished_bit:  0x01  # status byte 0x201 bit 0
+  saa7113_registers:
+    0x00: { name: chip_ident, access: ro,  doc: "Chip ID; non-0xFF response confirms presence." }
+    0x02: { name: input_ctl1, access: rw,  doc: "MODE[3:0] = analog input select; FUSE[1:0] = AGC mode." }
+    0x03: { name: input_ctl2, access: rw,  doc: "GAFIX = manual-gain enable; GAI18/GAI28 = chan1/chan2 gain MSBs." }
+    0x04: { name: input_ctl3, access: rw,  doc: "Chan-1 manual gain, low byte." }
+    0x05: { name: input_ctl4, access: rw,  doc: "Chan-2 manual gain, low byte." }
+    0x0A: { name: brightness, access: rw,  default: 0x80, doc: "u8; 0x80 = midpoint." }
+    0x0B: { name: contrast,   access: rw,  default: 0x44, doc: "signed s7; 0x40 = 1.0×." }
+    0x0C: { name: saturation, access: rw,  default: 0x40, doc: "signed s7; 0x40 = 1.0×." }
+    0x0D: { name: hue,        access: rw,  default: 0x00, doc: "signed s8." }
+    0x0E: { name: chroma_ctl1, access: rw, doc: "CSTD[2:0] selects NTSC / PAL / SECAM." }
+    0x0F: { name: chroma_gain, access: rw, doc: "ACGC = auto-chroma-gain enable; CGAIN[6:0] manual." }
+    0x1F: { name: status,     access: ro,  doc: "Lock bits, standard-detect bits." }
+  saa7113_reserved_subaddresses: [0x14, "0x18..0x1E", "0x20..0x3F", "0x63..0xFF"]
+  pixel_scale_source:
+    note: "Per-camera, per-axis mm/pixel scale lives in the CONTROLLER parameter store, not in the USB stream."
+    up_camera_x_key: 20
+    up_camera_y_key: 21
+    down_camera_x_key: 34
+    down_camera_y_key: 35
+    typical_values:
+      up:   { x: 0.0446, y: 0.0426 }
+      down: { x: 0.0268, y: 0.0253 }
+    anisotropy: "X and Y scales differ by ~6%; effective pixels are not square on the analog/interlaced chain."
+  mirror_flags_key: 58
+  persistence: |
+    SAA7113 register state persists as long as USB Vbus is asserted; it
+    survives a Windows driver swap (Zadig → WinUSB → back to bundled driver)
+    but is reset by a full USB plug-cycle. Practical pattern: a one-shot
+    tuning script run at boot.
+
+# -----------------------------------------------------------------------------
 #  Reserved opcodes — declared in the enum, never emitted by the stock host.
 #  Do not send these from a reimplementation; behaviour is undefined and may
 #  vary by firmware. The opcode space is intentionally exhausted here so a
@@ -847,6 +940,16 @@ procedures:
       - "0x15 output_bit_off_immediate bit=0x8000 — drop cam_mux."
     select_up:
       - "0x14 output_bit_on_immediate  bit=0x8200 — assert cam_mux | lamp_enable."
+
+  camera_tune_persist:
+    summary: "One-shot tuning of the SAA7113 video decoder via WinUSB / libusb (NOT TCP)."
+    notes: |
+      Out-of-band of the TCP motion protocol. Requires temporarily detaching
+      the stock USB grabber driver (or installing WinUSB), running a tuning
+      utility that writes the SAA7113 registers via STK1160 vendor requests,
+      then restoring the original driver. Register values persist in the
+      SAA7113 until USB Vbus is removed.
+    see_also: "docs/12-camera-system.md"
 
   jog:
     summary: "Continuous motion while a button is held; stop on release."

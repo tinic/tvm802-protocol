@@ -1,8 +1,11 @@
 # TVM802 Protocol
 
-A complete, reimplementation-grade specification of the **Qihe TVM802** pick-and-place machine's motion-controller TCP protocol.
+A complete, reimplementation-grade specification of the protocols a host needs to drive the **Qihe TVM802** pick-and-place machine:
 
-Covers the TVM802A / TVM802B / TVM802B+ family (all known variants share this protocol).
+- The **motion-controller TCP protocol** — opcodes, framing, parameter store, motion model.
+- The **camera subsystem** — USB capture chain (STK1160 + SAA7113), CD4052 mux selection, and register-level tuning.
+
+Covers the TVM802A / TVM802B / TVM802B+ family (all known variants share these protocols).
 
 ## Layout
 
@@ -21,6 +24,8 @@ docs/
   09-homing.md          Homing sequence.
   10-camera-mux.md      Up/down camera switching.
   11-jog.md             Continuous-motion (button-held) jog model.
+  12-camera-system.md   USB grabber chain, SAA7113 register-level tuning.
+  13-host-design-notes.md  Operational patterns for reimplementations.
 examples/
   *.hex                 Annotated wire captures.
 ```

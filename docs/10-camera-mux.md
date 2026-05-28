@@ -4,6 +4,8 @@ The TVM802 ships with two cameras (top-down board fiducial, bottom-up part visio
 
 This means the camera-select signal is sent over the same TCP protocol as motion, via output bit toggles.
 
+This page covers the **controller-side** of the camera system — the mux and light-ring output bits. For the full hardware chain (USB grabber, SAA7113 video decoder, register-level tuning), see [`12-camera-system.md`](12-camera-system.md).
+
 ## Output bits involved
 
 | Mask     | ID              | Role in camera mux                                        |
