@@ -61,6 +61,38 @@ ack_rule: |
   no per-command status byte — motion completion is inferred from the status
   poll (opcode 0x00), not from response bytes.
 
+sequence_counter:
+  field: "byte[1] of every request"
+  immediate_commands: "0 (zero), always"
+  queued_commands: |
+    Set by the host at flush time. The host maintains a running u8 counter
+    that increments per queued frame popped off its outgoing list and sent
+    to the controller. The counter wraps at 0xFF. The controller does NOT
+    appear to validate the counter; a reimplementation may send 0 in queued
+    frames as well, but the canonical behaviour is to increment.
+
+connection_lifecycle:
+  on_connect:
+    - "Open TCP socket to controller endpoint."
+    - "Set TCP_NODELAY; set 100 ms send/recv timeouts."
+    - "Send opcode 0x05 (controller_init) ONCE — servo-enable."
+    - "Read parameters (key 2/3 IP/port + any others) for sanity / startup config."
+    - "Begin status_poll cadence (~50 ms)."
+  not_on_every_motion: "Opcode 0x05 is sent ONCE per connection lifetime, not before every motion."
+  on_reconnect:
+    - "After socket failure, the host re-opens the connection."
+    - "Re-issues opcode 0x05 to re-arm the servos."
+    - "Resumes the status_poll loop; the controller's command FIFO is discarded across a disconnect."
+
+retry_policy:
+  per_request: "Maximum 2 attempts."
+  on_total_failure: |
+    The host's send/ack function returns failure to its caller. The caller's
+    typical reaction is to surface an error to the user (dialog) and abort
+    the in-flight operation. There is no automatic backoff or queued retry
+    on the wire.
+  on_socket_exception: "Hard fail — caller is responsible for re-establishing the connection."
+
 # -----------------------------------------------------------------------------
 #  Axis model
 # -----------------------------------------------------------------------------
@@ -119,6 +151,40 @@ axis_state_enum:
     The safe reimplementation rule is: 0 == idle, anything nonzero == busy.
     The four nonzero codes are observed in the wild but their exact meaning
     is best treated as opaque for completion detection.
+
+# -----------------------------------------------------------------------------
+#  Event / error codes (status_poll response byte 46)
+# -----------------------------------------------------------------------------
+event_codes:
+  type: u8
+  values:
+    0:
+      id: none
+      severity: nominal
+      doc: "No event. Normal operation."
+    1:
+      id: cmd_order_error
+      severity: error_emergency_stop
+      host_response: |
+        Stock host shows a dialog (resource string "cmdOrderError"), asserts
+        output bit 0x800 (buzzer), and runs an emergency-stop sequence.
+      doc: |
+        Command-order violation. The controller received a command sequence
+        it cannot execute — e.g. a queued move while paused, a move on an
+        axis with an active limit, or a motion-profile mismatch.
+    2:
+      id: limit_signal_error
+      severity: error_emergency_stop
+      host_response: "Same as event 1: buzzer + dialog + emergency stop."
+      doc: |
+        A motion command was issued toward a limit switch that is already
+        asserted. Distinct from a normal homing limit-hit (which the host
+        expects). This indicates an attempted move into a wall.
+  notes: |
+    Only event codes 0, 1, 2 are checked by the stock host. The byte may
+    carry other nonzero values from the controller; a reimplementation
+    should log unknown nonzero codes for diagnosis but treat them as the
+    same kind of fault as 1 / 2 (stop and surface the code).
 
 # -----------------------------------------------------------------------------
 #  Digital output bit map (set with opcodes 0x04 / 0x14 / 0x20-0x23)
@@ -277,7 +343,7 @@ parameters:
     56: { id: z_home_offset,         unit: micron,                                                  doc: "Z home offset; write-only — used by the host to reset Z during homing." }
     57: { id: vacuum_scale_pack,     unit: packed_u16x2,                                            doc: "Vacuum analog scale: ((hi/100), (lo/100)) → multipliers for status_poll.vacuum_1_raw / vacuum_2_raw." }
     58: { id: camera_mirror_pack,    unit: packed_i16x2,                                            doc: "(up_mirror<<16) | (down_mirror & 0xFFFF). MVision-DLL flip codes." }
-    59: { id: motor_subdivision,     unit: raw,             label_cn: "电机细分",                    doc: "Motor microstep subdivision (encoded; UI shows raw / 8)." }
+    59: { id: motor_subdivision,     unit: raw,             label_cn: "电机细分",                    doc: "Motor microstep subdivision (encoded; UI shows raw / 8). This value ALSO functions as a per-axis velocity multiplier in the host's motion equations — changing it rescales jog and move speeds." }
     60: { id: n2_upcam_pos_x,        unit: micron,          label_cn: "相机坐标2 (X)",               doc: "Head-2 position over up-vision camera, X." }
     61: { id: n2_upcam_pos_y,        unit: micron,          label_cn: "相机坐标2 (Y)",               doc: "Head-2 over up-camera, Y." }
 
@@ -433,7 +499,7 @@ opcodes:
         - { name: axis_state_5,  offset: 41, type: u8, doc: "Axis 5 (a2) state." }
         - { name: vacuum_1_raw,  offset: 42, type: u16le, doc: "Head-1 vacuum analog. Real reading = raw * vacuum_scale_1 (per-machine calibration)." }
         - { name: vacuum_2_raw,  offset: 44, type: u16le, doc: "Head-2 vacuum analog." }
-        - { name: event_code,    offset: 46, type: u8,    doc: "Controller event / error code; 0 = no event." }
+        - { name: event_code,    offset: 46, type: u8,    doc: "Controller event / error code. See event_codes table below." }
 
   - code: 0x01
     name: read_param
@@ -781,3 +847,21 @@ procedures:
       - "0x15 output_bit_off_immediate bit=0x8000 — drop cam_mux."
     select_up:
       - "0x14 output_bit_on_immediate  bit=0x8200 — assert cam_mux | lamp_enable."
+
+  jog:
+    summary: "Continuous motion while a button is held; stop on release."
+    on_button_down:
+      - "0x06 set_motion_profile_immediate — load the jog accel/decel/velocity profile for the target axis. Speed multiplier is 100% (no scaling)."
+      - "0x08 move_immediate — issue a long move in the desired direction (target = a large value beyond reachable travel; the move will be stopped before it gets there)."
+    on_button_up:
+      - "0x09 stop axis_mask=<jog axis bit> — halt the in-flight move."
+    notes: |
+      Jog is not a special opcode — it is a normal move with the velocity
+      profile tuned for handle-like response, terminated by stop on release.
+      The motion-profile values used for jog come from the host's UI / param
+      store; the controller has no concept of "jog mode" beyond the chosen
+      profile values.
+      Jog-speed mode bits (0x80 / 0x100 in the output bitmap) are operator-
+      panel cosmetic state, not a controller-side mode flag. They light the
+      front-panel speed indicator and may also pre-bias which profile the
+      host loads, but they do not change controller behaviour directly.

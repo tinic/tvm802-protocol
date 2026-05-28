@@ -140,7 +140,7 @@ Display labels in Chinese are taken from the host's ParamEdit dialog and preserv
 | 56  | `z_home_offset`             | micron            |                       | Z home offset; write-only, host writes during homing.                  |
 | 57  | `vacuum_scale_pack`         | packed_u16x2      |                       | Vacuum analog scaling: `(hi/100, lo/100)` multiply `vacuum_*_raw`.     |
 | 58  | `camera_mirror_pack`        | packed_i16x2      |                       | `(up_mirror << 16) | (down_mirror & 0xFFFF)`. MVision-DLL flip codes.  |
-| 59  | `motor_subdivision`         | raw               | 电机细分              | Motor microstep subdivision (UI shows raw / 8).                        |
+| 59  | `motor_subdivision`         | raw               | 电机细分              | Motor microstep subdivision (UI shows raw / 8). Also acts as a velocity multiplier in motion equations — changing it rescales jog and move speeds. |
 | 60  | `n2_upcam_pos_x`            | micron            | 相机坐标2 (X)         | Head-2 centred over up-vision camera, X.                               |
 | 61  | `n2_upcam_pos_y`            | micron            | 相机坐标2 (Y)         | Head-2 over up-camera, Y.                                              |
 

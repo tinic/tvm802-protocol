@@ -20,6 +20,7 @@ docs/
   08-feeders.md         Prick + peel + drag advance.
   09-homing.md          Homing sequence.
   10-camera-mux.md      Up/down camera switching.
+  11-jog.md             Continuous-motion (button-held) jog model.
 examples/
   *.hex                 Annotated wire captures.
 ```

@@ -86,9 +86,43 @@ raw = round(mm * scales[axis] * 1000)
 | 1    | `0x0002` | Job running                            |
 | 2    | `0x0004` | Home cycle active                      |
 | 4    | `0x0010` | Limit hit                              |
-| 5-15 | various  | Vendor-specific; treat as opaque       |
+| 5-15 | various  | Defined but not externally documented  |
 
 The cleanest "is anything moving?" test is the per-axis `axis_state[i]` bytes; the `status_word` bit 0 is essentially `OR(axis_state)`.
+
+The stock host has individual getters for bits 0..3 and 5..15 — each bit is wired up in code — but the *semantics* of bits 5..15 are not externally documented. They likely encode controller-internal states (e-stop latched, drive fault, ready/not-ready, etc.) that the host surfaces in its UI but does not use for protocol-level decisions. A reimplementation can poll the whole `status_word` for diagnostic logging while only acting on bits 0/1/2/4.
+
+## `event_code` (byte 46)
+
+The stock host checks for exactly two non-zero event codes:
+
+| Code | ID                  | Severity         | Meaning                                                          |
+|------|---------------------|------------------|------------------------------------------------------------------|
+| 0    | `none`              | nominal          | No event.                                                        |
+| 1    | `cmd_order_error`   | error — e-stop   | Command-order violation (move issued in wrong sequence / state). |
+| 2    | `limit_signal_error`| error — e-stop   | Motion commanded toward an already-asserted limit switch.        |
+
+On either non-zero code, the stock host:
+
+1. Asserts output bit `0x800` (buzzer).
+2. Shows a dialog (resource strings `"cmdOrderError"` / `"limitSignalError"`).
+3. Runs an emergency-stop sequence.
+
+A reimplementation should treat any unknown non-zero `event_code` the same way as 1 / 2: stop, surface the raw code, log for diagnosis. The controller may report other codes in different firmware revisions or fault modes that the stock host doesn't recognise.
+
+## Vacuum-analog scaling and host behaviour
+
+The two vacuum readings (`vacuum_1_raw`, `vacuum_2_raw`, bytes 42-45) are raw u16 values from the controller's ADC. Parameter `57` carries per-channel scale factors (`hi / 100`, `lo / 100`) that *could* convert the raw values into a real unit (kPa, % of vacuum, etc).
+
+**The stock host reads the scale factors but does not apply them.** Pickup confirmation uses the raw u16 directly:
+
+```python
+delta = baseline_raw - vacuum_raw
+if delta < part_threshold_raw:
+    pickup_failed
+```
+
+A reimplementation can match this behaviour (raw thresholds, baseline calibrated per machine) or apply the scale factors for human-friendly logging. Either approach is fine — the protocol exposes both halves.
 
 ## Vacuum analog channels
 
