@@ -29,7 +29,18 @@ All sizes include the 4-byte header. `delivery` is `immediate` (sent to controll
 
 A dash in the response-size column means the operation generates no payload beyond the opcode echo (which still arrives — read and discard it).
 
-Opcodes outside this table (e.g. 0x10, 0x18-0x1F) have not been observed in production traffic and are reserved.
+## Reserved opcodes
+
+The controller's opcode enum runs 0..23 (i.e. 0x00..0x17). The 22 codes listed above are the ones the stock host actually emits. Two codes inside the enum are declared but never used:
+
+| Code   | Status                     | Notes                                              |
+|--------|----------------------------|----------------------------------------------------|
+| `0x0A` | Declared, never emitted    | Reserved slot. Behaviour undefined. **Do not send.** |
+| `0x10` | Declared, never emitted    | Reserved slot. Behaviour undefined. **Do not send.** |
+
+Codes from `0x18` upward are outside the declared enum entirely. Sending them is undefined and on some firmwares produces desynchronised responses — **do not send**.
+
+A reimplementation that wants to be exhaustive can probe `0x0A` and `0x10` against an idle controller to characterise their behaviour, but this spec does not document them because the stock host doesn't use them and a future firmware revision may repurpose them.
 
 ## Immediate / queued twins
 

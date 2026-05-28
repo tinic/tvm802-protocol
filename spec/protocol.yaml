@@ -695,6 +695,32 @@ opcodes:
       same_as: 0x15
 
 # -----------------------------------------------------------------------------
+#  Reserved opcodes — declared in the enum, never emitted by the stock host.
+#  Do not send these from a reimplementation; behaviour is undefined and may
+#  vary by firmware. The opcode space is intentionally exhausted here so a
+#  conforming receiver knows which byte[0] values to reject vs. tolerate.
+# -----------------------------------------------------------------------------
+reserved_opcodes:
+  - code: 0x0A
+    name: reserved_10
+    status: declared_never_emitted
+    doc: |
+      Present in the controller's opcode enum but never sent by the stock host
+      and not observed in any live capture. Reimplementations must not emit
+      this opcode.
+  - code: 0x10
+    name: reserved_16
+    status: declared_never_emitted
+    doc: "Same status as 0x0A."
+  - range: { start: 0x18, end: 0xFF }
+    status: out_of_enum
+    doc: |
+      Outside the controller's declared opcode enum (which ends at 0x17).
+      Sending any value in this range is undefined; some firmwares ignore,
+      others may misinterpret as the low byte of an opcode-echo and produce
+      desynchronised responses. Do not send.
+
+# -----------------------------------------------------------------------------
 #  Completion / flow-control model
 # -----------------------------------------------------------------------------
 completion_model:
