@@ -22,7 +22,15 @@ The key space is sparse. There are two distinct regions:
 | Table E       | 420..449 | 30 entries × 1 key             | Tray-stack metadata                          |
 | Table F       | 450..479 | 30 entries × 1 key             | Advanced vision / component config           |
 
-Keys outside these ranges (62..84, 280..299, 480..600) are reserved or unused; in a typical backup they read as `-1` or `0`.
+Keys outside these ranges are mostly reserved or unused, with one exception:
+
+| Range     | Status                                                                           |
+|-----------|----------------------------------------------------------------------------------|
+| 62..84    | Unused; reads as `-1`.                                                           |
+| 280..299  | Gap between Table B (feeders) and Table C (fiducials); reads as `-1`.            |
+| 480..499  | Gap between Table F and the persistent region; reads as `-1`.                    |
+| **500..540** | **In use.** Key 500 is the host-managed `machine_homed` flag (above). Keys 501..540 contain controller-side persistent / factory values that the stock host does NOT read but the controller writes (likely chip IDs, factory limits, diagnostic counters). Safe to read; **do not write**. |
+| 541..600  | Unused; reads as `-1`.                                                           |
 
 ## Frames
 
@@ -143,6 +151,7 @@ Display labels in Chinese are taken from the host's ParamEdit dialog and preserv
 | 59  | `motor_subdivision`         | raw               | 电机细分              | Motor microstep subdivision (UI shows raw / 8). Also acts as a velocity multiplier in motion equations — changing it rescales jog and move speeds. |
 | 60  | `n2_upcam_pos_x`            | micron            | 相机坐标2 (X)         | Head-2 centred over up-vision camera, X.                               |
 | 61  | `n2_upcam_pos_y`            | micron            | 相机坐标2 (Y)         | Head-2 over up-camera, Y.                                              |
+| 500 | `machine_homed`             | bool              |                       | Persistent "machine has been homed" flag. Set true after GoHome completes; read as a precondition gate by calibration / debug dialogs. Persists in the controller across host restarts. |
 
 ### Feature-flag byte (key 23)
 

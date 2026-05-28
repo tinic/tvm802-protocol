@@ -44,6 +44,18 @@ The vacuum analog is a raw 16-bit ADC reading. Calibration is per-machine:
 
 Re-calibrate after any pump / hose maintenance — the baseline drifts with seal condition.
 
+### Where the baseline lives
+
+The **stock host stores baselines in memory only** — they are captured from `status_poll` at startup (the first idle reading) and held in host-side variables for the rest of the session. They are **not** persisted to a controller parameter or a local config file. A power cycle or host restart re-derives them from the next first idle reading.
+
+For reimplementations:
+
+- **Simplest:** match the stock host — capture baseline at startup, hold in memory, re-derive on restart.
+- **More robust:** persist baselines to your own config file with a timestamp; re-derive automatically if the file is older than N days or if the seasonal drift exceeds tolerance.
+- **Most robust:** continuously update an exponential-moving-average baseline whenever the head is provably idle and not holding a part (vacuum solenoid off, no recent pick).
+
+Either way: do NOT store the baseline in a controller parameter key. The store is for controller-side values; vacuum baselines are a host-side concern.
+
 ## Size-gate orientation
 
 The host's vision size-check sorts BOTH detected and expected dimensions to `(max, min)` before comparing. This means **W / H labelling is orientation-invariant**: a 4×2 part reported as `(W=2, H=4)` passes the gate identically to one reported as `(W=4, H=2)`. Vision detectors do not need to normalise long-axis-as-W.

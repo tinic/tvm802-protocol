@@ -83,6 +83,12 @@ To stop a queued sequence:
 
 Until you do step 2, the controller will resume draining the FIFO when stop is released. This is a frequent source of "phantom motion" bugs in early reimplementations.
 
+## Motion profile reference values
+
+The motion-profile opcodes (`0x06` immediate, `0x0F` queued) carry per-axis acceleration / deceleration / velocity tables. The protocol does not prescribe specific values; the host chooses them and re-issues a profile before every job move. The stock host's reference values — 6 axes × 12 speed modes — are documented in [`14-motion-profiles.md`](14-motion-profiles.md). A reimplementation can boot from those values and tune from there.
+
+The host applies its speed-percent multiplier **before** packing the frame, so the controller receives already-scaled velocities. There is no speed-percent field on the wire.
+
 ## Stale-position quirk
 
 After a queued move completes, the position reported by `status_poll` is the actual encoder position, which may differ from the integer target by 1 raw unit due to round-trip rounding. The stock host treats `|axis_position - target| <= 1` as done. A reimplementation should do the same.

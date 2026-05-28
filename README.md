@@ -26,6 +26,7 @@ docs/
   11-jog.md             Continuous-motion (button-held) jog model.
   12-camera-system.md   USB grabber chain, SAA7113 register-level tuning.
   13-host-design-notes.md  Operational patterns for reimplementations.
+  14-motion-profiles.md    Stock host's reference accel/decel/velocity tables.
 examples/
   *.hex                 Annotated wire captures.
 ```

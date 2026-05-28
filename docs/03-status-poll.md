@@ -80,17 +80,34 @@ raw = round(mm * scales[axis] * 1000)
 
 ## `status_word` bits
 
-| Bit  | Mask     | Meaning                                |
-|------|----------|----------------------------------------|
-| 0    | `0x0001` | System moving (any axis in motion)     |
-| 1    | `0x0002` | Job running                            |
-| 2    | `0x0004` | Home cycle active                      |
-| 4    | `0x0010` | Limit hit                              |
-| 5-15 | various  | Defined but not externally documented  |
+Best-effort mapping based on the host's individual bit-getter call sites. High-confidence bits are those the host actively gates decisions on; medium/low confidence are surfaced in UI or aggregated.
 
-The cleanest "is anything moving?" test is the per-axis `axis_state[i]` bytes; the `status_word` bit 0 is essentially `OR(axis_state)`.
+| Bit  | Mask     | Confidence | Meaning                                                                  |
+|------|----------|------------|--------------------------------------------------------------------------|
+| 0    | `0x0001` | **High**   | E-stop latched (hardware-side estop input).                              |
+| 1    | `0x0002` | Medium     | Vacuum-sensor fault on head 2.                                           |
+| 2    | `0x0004` | Medium     | Vacuum-sensor fault on head 1.                                           |
+| 3    | `0x0008` | Low        | Reserved.                                                                |
+| 4    | `0x0010` | Low        | Reserved (older docs called this "limit hit"; not confirmed).            |
+| 5    | `0x0020` | Low        | Aggregated limit-latch (component of method_17's `& 0x408` aggregate).   |
+| 6    | `0x0040` | Low        | Aggregated limit-latch.                                                  |
+| 7    | `0x0080` | Low        | Aggregated limit-latch.                                                  |
+| 8    | `0x0100` | Low        | Aggregated limit-latch.                                                  |
+| 9    | `0x0200` | **High**   | Motion in progress (any axis moving). Equivalent to `OR(axis_state[*])`. |
+| 10   | `0x0400` | Medium     | Pump active / soft-limit aggregate component.                            |
+| 11   | `0x0800` | **High**   | Program ready / idle (host gates "start job" on this).                   |
+| 12   | `0x1000` | Low        | Reserved.                                                                |
+| 13   | `0x2000` | Medium     | Prick-pin home (overlaps input bit b22).                                 |
+| 14   | `0x4000` | Low        | Reserved.                                                                |
+| 15   | `0x8000` | Low        | Reserved.                                                                |
 
-The stock host has individual getters for bits 0..3 and 5..15 — each bit is wired up in code — but the *semantics* of bits 5..15 are not externally documented. They likely encode controller-internal states (e-stop latched, drive fault, ready/not-ready, etc.) that the host surfaces in its UI but does not use for protocol-level decisions. A reimplementation can poll the whole `status_word` for diagnostic logging while only acting on bits 0/1/2/4.
+Reimplementation rule of thumb:
+
+- **Gate logic on bits 0, 9, 11.** E-stop / motion / ready — these are reliable and the host trusts them.
+- **Surface in UI bits 1, 2, 10, 13.** Useful diagnostics; do not gate behaviour on them without further validation.
+- **Treat the rest as reserved.** Log them when nonzero; don't act on them.
+
+The cleanest "is anything moving?" test remains the per-axis `axis_state[i]` bytes; `status_word` bit 9 essentially mirrors them.
 
 ## `event_code` (byte 46)
 
@@ -107,6 +124,15 @@ On either non-zero code, the stock host:
 1. Asserts output bit `0x800` (buzzer).
 2. Shows a dialog (resource strings `"cmdOrderError"` / `"limitSignalError"`).
 3. Runs an emergency-stop sequence.
+
+### Recovery sequence (after operator dismisses the dialog)
+
+```
+0x14 output_bit_on_immediate  bit = 0x0800   # buzzer (already on; idempotent)
+0x09 stop                     axis_mask = 0x3F   # all-axis stop
+```
+
+The stock host does NOT re-issue opcode `0x05` (controller_init) or `0x0B cmd=0` (program_control clear) on this path. The motion FIFO is drained host-side; the controller's state recovers via the stop alone. After this, the host resumes its normal status-poll cadence. The operator must restart the job manually.
 
 A reimplementation should treat any unknown non-zero `event_code` the same way as 1 / 2: stop, surface the raw code, log for diagnosis. The controller may report other codes in different firmware revisions or fault modes that the stock host doesn't recognise.
 

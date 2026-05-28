@@ -48,6 +48,35 @@ The sign matters: feeds always move in the negative direction along the drag axi
 
 Cost. Per-feeder motors triple the machine BOM. The shared peel + head-drag scheme keeps everything mechanical on the feeder slot itself (just a sprocket and a tensioner), at the price of a head trip back to the feeder before every pick. This is the central design tradeoff of the TVM802 family.
 
+## Tray feeders vs tape feeders
+
+Front-tray stack feeders (Table E in [`07-parameters.md`](07-parameters.md), parameter keys 420-449) are **fundamentally different** from tape feeders:
+
+| Aspect             | Tape feeders                       | Tray feeders                                |
+|--------------------|------------------------------------|---------------------------------------------|
+| Advance mechanism  | Prick + head drag + peel           | Purely positional — no advance opcode       |
+| Per-pick motion    | Head moves to pitch + drag         | Head moves to *next stack position*         |
+| Prick pin          | Used (output bit `0x4000`)         | Not used; prick stays retracted             |
+| Peel axis          | Used (axis 0)                      | Not used                                    |
+| Per-feeder state   | Tape position (advances over time) | Stack-index (decrements as parts taken)     |
+| Stock count source | Implicit from tape pitch + count   | Per-tray count param (in Table E packing)   |
+
+For a tray pick, the host:
+
+```
+0x06 set_motion_profile_immediate     axis = X / Y, profile = pick-approach
+0x08 move_immediate                   target = (tray_pos_x, tray_pos_y) from stack-index
+0x06 set_motion_profile_immediate     axis = Z, profile = plunge
+0x08 move_immediate                   target = (current_x, current_y, nozzle_z_front_stack)
+0x14 output_bit_on_immediate          bit = head_N_vacuum
+0x11 dwell                            ms = settle
+0x08 move_immediate                   target = (current_x, current_y, safe_z)
+```
+
+No opcode `0x0D feed_axis0`, no prick-pin toggle, no head drag move. The "advance" is just: next time we want a part from this tray, use the next stack position.
+
+A reimplementation needs separate feeder classes (or a class-with-mode) for tape vs tray; the protocol-level sequences share opcodes but differ in shape.
+
 ## Drop-bin / reject
 
 There is no drop-bin sequence in the protocol. The stock host implements "reject" as:
