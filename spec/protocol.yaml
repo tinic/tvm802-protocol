@@ -184,38 +184,215 @@ digital_inputs:
 
 # -----------------------------------------------------------------------------
 #  Parameter store (read via opcode 0x01, write via 0x02, commit via 0x03)
+#
+#  The store has TWO regions:
+#    - keys 0..61   : scalar parameters, named individually
+#    - keys 85..479 : indexed tables (Table A through Table F)
+#
+#  Each `unit:` below is one of:
+#    raw                — int32, no conversion
+#    micron             — wire / 1000 = mm  (positions, Z heights, offsets)
+#    micropx_per_mm     — wire / 10000 = mm/pixel  (camera scales)
+#    centi              — wire / 100 = real value (deviation thresholds)
+#    millis             — wire = milliseconds (settle waits, delays)
+#    bool               — wire != 0 = true
+#    flag_byte_8        — 8 booleans packed into bits 0..7
+#    packed_ipv4_le     — 4 bytes = IPv4 octets, little-endian
+#    packed_i16x2       — (high signed 16) and (low signed 16), independent values
+#    packed_u16x2       — (high u16) and (low u16), independent values
+#    packed_byte_x4     — 4 bytes, MSB-first ordering
+#    u16                — wire & 0xFFFF
 # -----------------------------------------------------------------------------
 parameters:
   width_bits: 32
   signed: true
   key_count_observed: 601
   units:
-    position_keys_x1000: "wire / 1000 = mm"
-    scale_keys_x10000:   "wire / 10000 = mm/pixel"
-  known_keys:
-    2:  { id: controller_ip,        unit: packed_ipv4_le, doc: "0x0800A8C0 = 192.168.0.8." }
-    3:  { id: controller_port,      unit: u16,            doc: "Default 701." }
-    4:  { id: home_x,               unit: micron }
-    5:  { id: home_y,               unit: micron }
-    6:  { id: n1_upcam_pos_x,       unit: micron, doc: "Head-1 position over up-vision camera, X." }
-    7:  { id: n1_upcam_pos_y,       unit: micron }
-    12: { id: discard_x,            unit: micron, doc: "Reject / discard bin position." }
-    13: { id: discard_y,            unit: micron }
-    20: { id: upcam_scale_x,        unit: micropx_per_mm,  doc: "Up-vision camera, X scale, * 10000." }
-    21: { id: upcam_scale_y,        unit: micropx_per_mm }
-    22: { id: vision_z,             unit: micron,          doc: "Focal Z for up-vision; often 0." }
-    26: { id: nozzle_vision_z,      unit: micron,          doc: "Nozzle Z at vision; often 0." }
-    34: { id: downcam_scale_x,      unit: micropx_per_mm,  doc: "Down-vision camera, X scale, * 10000." }
-    35: { id: downcam_scale_y,      unit: micropx_per_mm }
-    45: { id: feature_flag_v3_09,   unit: bool,            doc: "Z-homing enable; firmware > 3.09." }
-    56: { id: z_home_offset,        unit: micron,          doc: "Z home offset; written during homing." }
-    58: { id: camera_mirror_pack,   unit: packed_i16x2,    doc: "(up_mirror << 16) | (down_mirror & 0xFFFF). MVision-DLL flip codes." }
-    60: { id: n2_upcam_pos_x,       unit: micron,          doc: "Head-2 position over up-vision camera, X." }
-    61: { id: n2_upcam_pos_y,       unit: micron }
+    micron:           "wire / 1000 = mm"
+    micropx_per_mm:   "wire / 10000 = mm/pixel"
+    centi:            "wire / 100 = real value"
+    millis:           "wire = milliseconds"
+
+  # ---------------------------------------------------------------------------
+  # Scalars (keys 0..61). Sparse; gaps (49, 62-84) are unused or reserved.
+  # `confidence:` is verified unless noted. Chinese labels are taken from the
+  # host's ParamEdit dialog and preserved verbatim.
+  # ---------------------------------------------------------------------------
+  scalars:
+    0:  { id: machine_serial_hi,     unit: raw,             label_cn: "MAC地址",                     doc: "Machine serial / MAC high 32 bits." }
+    1:  { id: machine_serial_lo,     unit: u16,             label_cn: "MAC地址",                     doc: "Machine serial / MAC low 16 bits." }
+    2:  { id: controller_ip,         unit: packed_ipv4_le,                                          doc: "0x0800A8C0 = 192.168.0.8 (factory default)." }
+    3:  { id: controller_port,       unit: u16,                                                     doc: "Default 701." }
+    4:  { id: home_x,                unit: micron,          label_cn: "原点坐标 (X)",                doc: "Home position X (machine zero)." }
+    5:  { id: home_y,                unit: micron,          label_cn: "原点坐标 (Y)",                doc: "Home position Y." }
+    6:  { id: n1_upcam_pos_x,        unit: micron,          label_cn: "相机坐标1 (X)",               doc: "Head-1 position centred over the up-vision camera, X." }
+    7:  { id: n1_upcam_pos_y,        unit: micron,          label_cn: "相机坐标1 (Y)",               doc: "Head-1 over up-camera, Y." }
+    8:  { id: cam_offset_x,          unit: micron,                                                  doc: "Camera-to-machine reference offset, X." }
+    9:  { id: cam_offset_y,          unit: micron,                                                  doc: "Camera reference offset, Y." }
+    10: { id: prick_offset_x,        unit: micron,                                                  doc: "Prick-pin offset from head reference, X." }
+    11: { id: prick_offset_y,        unit: micron,                                                  doc: "Prick-pin offset from head reference, Y." }
+    12: { id: discard_x,             unit: micron,          label_cn: "弃料坐标 (X)",                doc: "Reject / discard bin position, X." }
+    13: { id: discard_y,             unit: micron,          label_cn: "弃料坐标 (Y)",                doc: "Discard bin Y." }
+    14: { id: nozzle_z_pcb,          unit: micron,                                                  doc: "Nozzle plunge Z for PCB placement." }
+    15: { id: nozzle_z_feeder,       unit: micron,                                                  doc: "Nozzle plunge Z for tape-feeder pickup." }
+    16: { id: nozzle_z_front_stack,  unit: micron,                                                  doc: "Nozzle plunge Z for front tray pickup." }
+    17: { id: nozzle_z_discard,      unit: micron,                                                  doc: "Nozzle plunge Z for discard drop." }
+    18: { id: prick_z,               unit: micron,                                                  doc: "Prick-pin plunge depth (Z)." }
+    19: { id: feature_flag_misc,     unit: bool,                                                    doc: "Generic feature flag (purpose machine-specific)." }
+    20: { id: upcam_scale_x,         unit: micropx_per_mm,  label_cn: "相机比例 (X)",                doc: "Up-vision camera X scale." }
+    21: { id: upcam_scale_y,         unit: micropx_per_mm,  label_cn: "相机比例 (Y)",                doc: "Up-vision camera Y scale." }
+    22: { id: vision_z,              unit: micron,                                                  doc: "Up-vision focal Z; often 0." }
+    23: { id: feature_flags_8,       unit: flag_byte_8,                                             doc: "Eight feature flags packed into bits 0..7. See parameters.flag_register_23 below." }
+    24: { id: nozzle_vacuum_thresh,  unit: raw,             label_cn: "吸嘴阈值",                    doc: "Nozzle empty / vacuum-pressure threshold (low)." }
+    25: { id: comp_vacuum_thresh,    unit: raw,             label_cn: "元件阈值",                    doc: "Component-present vacuum threshold (high)." }
+    26: { id: nozzle_vision_z,       unit: micron,                                                  doc: "Nozzle Z at vision pose; often 0." }
+    27: { id: nozzle_offset_x,       unit: micron,                                                  doc: "Nozzle offset relative to head reference, X." }
+    28: { id: nozzle_offset_y,       unit: micron,                                                  doc: "Nozzle offset, Y." }
+    29: { id: n1_feeder_settle_ms,   unit: millis,                                                  doc: "Nozzle-1 settle delay at feeder pickup." }
+    30: { id: pcb_settle_ms_a,       unit: millis,                                                  doc: "Settle delay after nozzle plunge at PCB (variant A)." }
+    31: { id: pcb_settle_ms_b,       unit: millis,                                                  doc: "Settle delay after nozzle plunge at PCB (variant B)." }
+    32: { id: n2_feeder_settle_ms,   unit: millis,                                                  doc: "Nozzle-2 settle delay at feeder pickup." }
+    33: { id: auto_sort_flag,        unit: bool,                                                    doc: "Enable auto-sort of placement order. -1 (all bits) common in backups." }
+    34: { id: downcam_scale_x,       unit: micropx_per_mm,  label_cn: "下视相机比例 (X)",            doc: "Down-vision camera X scale." }
+    35: { id: downcam_scale_y,       unit: micropx_per_mm,  label_cn: "下视相机比例 (Y)",            doc: "Down-vision camera Y scale." }
+    36: { id: up_vision_angle,       unit: micron,                                                  doc: "Up-vision angle-calibration constant." }
+    37: { id: prick_retract,         unit: micron,          label_cn: "拨针回退",                    doc: "Prick-pin retract distance after feed." }
+    38: { id: nozzle_cal_x,          unit: micron,                                                  doc: "Nozzle calibration X (head-2 or N1 detail)." }
+    39: { id: nozzle_cal_y,          unit: micron,                                                  doc: "Nozzle calibration Y." }
+    40: { id: nozzle_cal_z,          unit: micron,                                                  doc: "Nozzle calibration Z primary." }
+    41: { id: nozzle_cal_z2,         unit: micron,                                                  doc: "Nozzle calibration Z secondary." }
+    42: { id: mark_vision_offset_x,  unit: micron,          label_cn: "下视中心 (X)",                doc: "Down-camera fiducial / mark-vision centre offset, X." }
+    43: { id: mark_vision_offset_y,  unit: micron,          label_cn: "下视中心 (Y)",                doc: "Down-camera fiducial centre offset, Y." }
+    44: { id: prick_offset_x_alt,    unit: micron,                                                  doc: "Prick-pin offset (secondary set), X." }
+    45: { id: prick_offset_y_alt,    unit: centi,                                                   doc: "Prick-pin offset (secondary), Y (* 100 units)." }
+    46: { id: prick_pos_x,           unit: micron,                                                  doc: "Prick-pin assembly mounting position, X." }
+    47: { id: prick_pos_y,           unit: micron,                                                  doc: "Prick-pin assembly mounting position, Y." }
+    48: { id: up_cam_settle_ms,      unit: millis,                                                  doc: "Up-camera settle delay after camera switch." }
+    50: { id: controller_scale_x,    unit: micropx_per_mm,                                          doc: "Controller-internal X scale (~1.0 calibration factor)." }
+    51: { id: controller_scale_y,    unit: micropx_per_mm,                                          doc: "Controller-internal Y scale (~1.0 calibration factor)." }
+    52: { id: dev_thresh_xy,         unit: centi,                                                   doc: "XY-deviation threshold for placement-correction warnings." }
+    53: { id: dev_thresh_angle,      unit: centi,                                                   doc: "Angle-deviation threshold (degrees * 100)." }
+    54: { id: vacuum_thresh_pack_a,  unit: packed_u16x2,                                            doc: "Vacuum thresholds (channels 1 & 2) packed (hi<<16)|lo. See parameters.vacuum_threshold_pairs." }
+    55: { id: vacuum_thresh_pack_b,  unit: packed_u16x2,                                            doc: "Vacuum thresholds (channels 3 & 4)." }
+    56: { id: z_home_offset,         unit: micron,                                                  doc: "Z home offset; write-only — used by the host to reset Z during homing." }
+    57: { id: vacuum_scale_pack,     unit: packed_u16x2,                                            doc: "Vacuum analog scale: ((hi/100), (lo/100)) → multipliers for status_poll.vacuum_1_raw / vacuum_2_raw." }
+    58: { id: camera_mirror_pack,    unit: packed_i16x2,                                            doc: "(up_mirror<<16) | (down_mirror & 0xFFFF). MVision-DLL flip codes." }
+    59: { id: motor_subdivision,     unit: raw,             label_cn: "电机细分",                    doc: "Motor microstep subdivision (encoded; UI shows raw / 8)." }
+    60: { id: n2_upcam_pos_x,        unit: micron,          label_cn: "相机坐标2 (X)",               doc: "Head-2 position over up-vision camera, X." }
+    61: { id: n2_upcam_pos_y,        unit: micron,          label_cn: "相机坐标2 (Y)",               doc: "Head-2 over up-camera, Y." }
+
+  # Bit unpack for key 23.
+  flag_register_23:
+    bit0: { id: use_pressure_check,         doc: "Enable vacuum-pressure pickup confirmation." }
+    bit1: { id: use_auto_sort,              doc: "Re-order placements by proximity to minimise travel." }
+    bit2: { id: use_auto_return_home,       doc: "Return to home after job complete." }
+    bit3: { id: left_stack_positioning,     doc: "LEFT-bank feeder positioning mode." }
+    bit4: { id: back_stack_positioning,     doc: "BACK-bank feeder positioning mode." }
+    bit5: { id: reserved_5,                 doc: "Reserved / undocumented." }
+    bit6: { id: reserved_6,                 doc: "Reserved / undocumented." }
+    bit7: { id: reserved_7,                 doc: "Reserved / undocumented." }
+
+  # Unpack rules for the packed vacuum-threshold keys (54, 55).
+  vacuum_threshold_pairs:
+    description: |
+      Two packed 32-bit words hold four head/channel vacuum thresholds.
+      For each key:
+        threshold_hi = (raw >> 16) & 0xFFFF
+        threshold_lo = (raw      ) & 0xFFFF
+    layout:
+      key_54_hi: { channel: 1, doc: "Head-1 vacuum threshold A." }
+      key_54_lo: { channel: 2, doc: "Head-2 vacuum threshold A." }
+      key_55_hi: { channel: 3, doc: "Head-1 vacuum threshold B (or aux)." }
+      key_55_lo: { channel: 4, doc: "Head-2 vacuum threshold B (or aux)." }
+
+  # ---------------------------------------------------------------------------
+  # Indexed tables. Each table has a fixed element count and stride.
+  # ---------------------------------------------------------------------------
+  tables:
+
+    table_a:
+      name: "Machine identity / payload"
+      range: { start: 85, end: 99 }
+      count: 15
+      stride: 1
+      element:
+        type: packed_byte_x4
+        doc: "Four bytes per element; backups typically show 0x3C3C3C3C (default fill)."
+      doc: "Purpose not fully decoded; likely firmware identity, model code, or vendor payload."
+      confidence: medium
+
+    table_b_feeders:
+      name: "Tape-feeder slot configuration"
+      range: { start: 100, end: 279 }
+      count: 60
+      stride: 3
+      element:
+        layout:
+          - { offset: 0, id: pos_x,         unit: micron,        doc: "Feeder slot X position." }
+          - { offset: 1, id: pos_y,         unit: micron,        doc: "Feeder slot Y position." }
+          - { offset: 2, id: type_id_pack,  unit: packed_u16x2,  doc: "(type<<16) | (id & 0xFFFF). type ∈ {8, 12, 16, 24} maps to component-height LUT (3.5 / 5.5 / 7.5 / 11.0 mm)." }
+      banks:
+        - { name: LEFT, slots: "0..29", drag_axis: x, doc: "Mounted on the left side of the machine; head drags carrier tape along X." }
+        - { name: BACK, slots: "30..59", drag_axis: y, doc: "Mounted on the back; drag axis is Y." }
+      example:
+        slot_0:
+          raw: { key_100: -45230, key_101: -4690, key_102: 524292 }
+          decoded: { pos_x: -45.230, pos_y: -4.690, type: 8, id: 4, derived_height_mm: 3.5 }
+
+    table_c_fiducials_1:
+      name: "Down-vision fiducial reference set 1"
+      range: { start: 300, end: 359 }
+      count: 30
+      stride: 2
+      element:
+        layout:
+          - { offset: 0, id: pos_x, unit: micron }
+          - { offset: 1, id: pos_y, unit: micron }
+      doc: "Board fiducial positions (down-camera). 30 slots, sparsely used."
+
+    table_d_fiducials_2:
+      name: "Down-vision fiducial reference set 2"
+      range: { start: 360, end: 419 }
+      count: 30
+      stride: 2
+      element:
+        layout:
+          - { offset: 0, id: pos_x, unit: micron }
+          - { offset: 1, id: pos_y, unit: micron }
+      doc: "Second fiducial set; purpose mirrors table_c (alternate board layouts, bottom-side, or backup)."
+      confidence: medium
+
+    table_e_tray_meta:
+      name: "Tray / stack metadata"
+      range: { start: 420, end: 449 }
+      count: 30
+      stride: 1
+      element:
+        type: packed_u16x2
+        doc: "(stack_type<<16) | (instance_id & 0xFFFF)."
+      doc: "Per-tray metadata for the front tray-stack feeders (orientation, count, feed direction)."
+      confidence: medium
+
+    table_f_advanced:
+      name: "Advanced component / vision config"
+      range: { start: 450, end: 479 }
+      count: 30
+      stride: 1
+      element:
+        type: packed_byte_x4
+        doc: "Four bytes per element; each byte * 100 = a sub-value."
+      doc: "Written by the newer parameter-edit path; not read in older firmware. Purpose not fully decoded."
+      confidence: low
+
   notes: |
-    Keys 0..600 are scanned by the host on connect. The set above is the
-    documented subset; many others exist (feeder configs, vision Range,
-    mark sizes, thresholds) and live alongside ParamEdit's labelled UI.
+    Keys outside the documented scalars or tables (62..84, 280..299, 480..600)
+    are unused or reserved. In a typical TVM802B backup, unused keys read as
+    -1 (sentinel) or 0.
+
+    Always commit (opcode 0x03) after a write burst. A reimplementation that
+    intends to write should ALWAYS back up the full key space first via the
+    read_param loop (key 0..600); restoring requires writing each non-zero key
+    back and a final commit.
 
 # -----------------------------------------------------------------------------
 #  Opcodes
